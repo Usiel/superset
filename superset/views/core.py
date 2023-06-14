@@ -100,7 +100,7 @@ from superset.views.utils import (
     check_explore_cache_perms,
     check_resource_permissions,
     check_slice_perms,
-    get_dashboard_extra_filters,
+    get_dashboard_extra_form_data,
     get_datasource_info,
     get_form_data,
     get_viz,
@@ -1126,10 +1126,10 @@ class Superset(BaseSupersetView):  # pylint: disable=too-many-public-methods
             try:
                 form_data = get_form_data(slc.id, use_slice_data=True)[0]
                 if dashboard_id:
-                    form_data["extra_filters"] = (
+                    form_data["extra_form_data"] = (
                         json.loads(extra_filters)
                         if extra_filters
-                        else get_dashboard_extra_filters(slc.id, dashboard_id)
+                        else get_dashboard_extra_form_data(slc.id, dashboard_id)
                     )
 
                 if not slc.datasource:

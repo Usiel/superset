@@ -75,7 +75,7 @@ from superset.utils.core import (
 from superset.utils.database import get_or_create_db
 from superset.utils import schema
 from superset.utils.hashing import md5_sha_from_str
-from superset.views.utils import build_extra_filters, get_form_data
+from superset.views.utils import build_extra_form_data, get_form_data
 from tests.integration_tests.base_tests import SupersetTestCase
 from tests.integration_tests.fixtures.world_bank_dashboard import (
     load_world_bank_dashboard_with_slices,
@@ -782,19 +782,19 @@ class TestUtils(SupersetTestCase):
 
         # immune to all filters
         assert (
-            build_extra_filters(layout, filter_scopes, default_filters, treemap.id)
+            build_extra_form_data(layout, filter_scopes, default_filters, treemap.id)
             == []
         )
 
         # in scope
-        assert build_extra_filters(
+        assert build_extra_form_data(
             layout, filter_scopes, default_filters, world.id
         ) == [
             {"col": "region", "op": "==", "val": "North America"},
             {"col": "country_name", "op": "in", "val": ["United States"]},
         ]
 
-        assert build_extra_filters(
+        assert build_extra_form_data(
             layout, filter_scopes, default_filters, box_plot.id
         ) == [{"col": "region", "op": "==", "val": "North America"}]
 

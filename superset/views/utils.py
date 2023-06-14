@@ -33,6 +33,7 @@ from werkzeug.wrappers.response import Response
 import superset.models.core as models
 from superset import app, dataframe, db, result_set, viz
 from superset.common.db_query_status import QueryStatus
+from superset.constants import EXTRA_FORM_DATA_APPEND_KEYS
 from superset.datasource.dao import DatasourceDAO
 from superset.errors import ErrorLevel, SupersetError, SupersetErrorType
 from superset.exceptions import (
@@ -49,6 +50,9 @@ from superset.models.slice import Slice
 from superset.models.sql_lab import Query
 from superset.superset_typing import FormData
 from superset.utils.core import DatasourceType
+from superset.utils.dashboard_filter_scopes_converter import (
+    convert_filter_scopes_to_native_filters,
+)
 from superset.utils.decorators import stats_timing
 from superset.viz import BaseViz
 
@@ -309,9 +313,7 @@ def apply_display_max_row_limit(
 CONTAINER_TYPES = ["COLUMN", "GRID", "TABS", "TAB", "ROW"]
 
 
-def get_dashboard_extra_filters(
-    slice_id: int, dashboard_id: int
-) -> list[dict[str, Any]]:
+def get_dashboard_extra_form_data(slice_id: int, dashboard_id: int) -> dict[str, Any]:
     session = db.session()
     dashboard = session.query(Dashboard).filter_by(id=dashboard_id).one_or_none()
 
@@ -322,84 +324,73 @@ def get_dashboard_extra_filters(
         or not dashboard.slices
         or not any(slc for slc in dashboard.slices if slc.id == slice_id)
     ):
-        return []
+        return {}
 
     try:
         # does this dashboard have default filters?
         json_metadata = json.loads(dashboard.json_metadata)
         default_filters = json.loads(json_metadata.get("default_filters", "null"))
-        if not default_filters:
-            return []
+        native_filter_configuration = json_metadata.get(
+            "native_filter_configuration", None
+        )
 
-        # are default filters applicable to the given slice?
-        filter_scopes = json_metadata.get("filter_scopes", {})
+        # TODO: Map to native filters
+        filter_boxes_by_id = {
+            slc.id: slc for slc in dashboard.slices if slc.viz_type == "filter_box"
+        }
+        native_filter_configuration.extend(
+            convert_filter_scopes_to_native_filters(
+                json_metadata,
+                {},
+                filter_boxes=list(filter_boxes_by_id.values()),
+            ),
+        )
+
+        if not native_filter_configuration:
+            return {}
+
         layout = json.loads(dashboard.position_json or "{}")
 
-        if (
-            isinstance(layout, dict)
-            and isinstance(filter_scopes, dict)
-            and isinstance(default_filters, dict)
-        ):
-            return build_extra_filters(layout, filter_scopes, default_filters, slice_id)
+        if isinstance(layout, dict) and isinstance(native_filter_configuration, list):
+            return build_extra_form_data(layout, native_filter_configuration, slice_id)
     except json.JSONDecodeError:
         pass
 
-    return []
+    return {}
 
 
-def build_extra_filters(  # pylint: disable=too-many-locals,too-many-nested-blocks
+def build_extra_form_data(  # pylint: disable=too-many-locals,too-many-nested-blocks
     layout: dict[str, dict[str, Any]],
-    filter_scopes: dict[str, dict[str, Any]],
-    default_filters: dict[str, dict[str, list[Any]]],
+    native_filter_configuration: list[dict[str, Any]],
     slice_id: int,
-) -> list[dict[str, Any]]:
-    extra_filters = []
+) -> dict[str, Any]:
+    aggregated_extra_form_data: dict[str, Any] = {}
 
-    # do not apply filters if chart is not in filter's scope or chart is immune to the
-    # filter.
-    for filter_id, columns in default_filters.items():
-        filter_slice = db.session.query(Slice).filter_by(id=filter_id).one_or_none()
+    # do not apply filters if chart is not in filter's scope or chart is excluded
+    for native_filter in native_filter_configuration:
+        current_field_scopes = native_filter.get("scope", {})
+        scoped_container_ids = current_field_scopes.get("rootPath", ["ROOT_ID"])
+        excluded_slice_id = current_field_scopes.get("excluded", [])
 
-        filter_configs: list[dict[str, Any]] = []
-        if filter_slice:
-            filter_configs = (
-                json.loads(filter_slice.params or "{}").get("filter_configs") or []
-            )
+        # TODO: Use chartsInScope instead? Sometimes it's not set - why is that?
+        for container_id in scoped_container_ids:
+            if slice_id not in excluded_slice_id and is_slice_in_container(
+                layout, container_id, slice_id
+            ):
+                extra_form_data = native_filter.get("defaultDataMask", {}).get(
+                    "extraFormData"
+                )
 
-        scopes_by_filter_field = filter_scopes.get(filter_id, {})
-        for col, val in columns.items():
-            if not val:
-                continue
+                if extra_form_data:
+                    for key, value in extra_form_data.items():
+                        if key in EXTRA_FORM_DATA_APPEND_KEYS:
+                            if not aggregated_extra_form_data.get(key):
+                                aggregated_extra_form_data[key] = []
+                            aggregated_extra_form_data[key] += value
+                        else:
+                            aggregated_extra_form_data[key] = value
 
-            current_field_scopes = scopes_by_filter_field.get(col, {})
-            scoped_container_ids = current_field_scopes.get("scope", ["ROOT_ID"])
-            immune_slice_ids = current_field_scopes.get("immune", [])
-
-            for container_id in scoped_container_ids:
-                if slice_id not in immune_slice_ids and is_slice_in_container(
-                    layout, container_id, slice_id
-                ):
-                    # Ensure that the filter value encoding adheres to the filter select
-                    # type.
-                    for filter_config in filter_configs:
-                        if filter_config["column"] == col:
-                            is_multiple = filter_config["multiple"]
-
-                            if not is_multiple and isinstance(val, list):
-                                val = val[0]
-                            elif is_multiple and not isinstance(val, list):
-                                val = [val]
-                            break
-
-                    extra_filters.append(
-                        {
-                            "col": col,
-                            "op": "in" if isinstance(val, list) else "==",
-                            "val": val,
-                        }
-                    )
-
-    return extra_filters
+    return aggregated_extra_form_data
 
 
 def is_slice_in_container(
