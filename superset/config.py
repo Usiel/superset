@@ -1040,6 +1040,12 @@ class CeleryConfig:  # pylint: disable=too-few-public-methods
         #     "schedule": crontab(minute=0, hour=0, day_of_month=1),
         #     "options": {"retention_period_days": 180},
         # },
+        # Uncomment to enable cached Slack conversations and increase
+        # SLACK_CHANNEL_CACHE_TIMEOUT to a corresponding value (depends on schedule)
+        # "slack.cache_conversations": {
+        #     "task": "slack.cache_conversations",
+        #     "schedule": crontab(minute="0", hour="*"),
+        # }
     }
 
 
@@ -1482,6 +1488,7 @@ EMAIL_REPORTS_CTA = "Explore in Superset"
 # Slack API token for the superset reports, either string or callable
 SLACK_API_TOKEN: Callable[[], str] | str | None = None
 SLACK_PROXY = None
+SLACK_CHANNEL_CACHE_TIMEOUT = 30
 
 # The webdriver to use for generating reports. Use one of the following
 # firefox

@@ -17,13 +17,13 @@
 
 
 import logging
-from typing import Optional
+from typing import Any, Optional
 
 from flask import current_app
 from slack_sdk import WebClient
 from slack_sdk.errors import SlackApiError
 
-from superset import feature_flag_manager
+from superset import cache_manager, feature_flag_manager
 from superset.exceptions import SupersetException
 from superset.utils.backports import StrEnum
 
@@ -46,12 +46,38 @@ def get_slack_client() -> WebClient:
     return WebClient(token=token, proxy=current_app.config["SLACK_PROXY"])
 
 
+def _forced_update_for_channels(forced_update: bool = False) -> bool:
+    return forced_update
+
+
+@cache_manager.cache.memoize(
+    timeout=current_app.config["SLACK_CHANNEL_CACHE_TIMEOUT"],
+    forced_update=_forced_update_for_channels,
+)
+def get_channels(forced_update: bool = False) -> list[dict[str, Any]]:
+    client = get_slack_client()
+    channels = []
+    cursor = None
+    types = [SlackChannelTypes.PUBLIC, SlackChannelTypes.PRIVATE]
+    extra_params = {"types": ",".join(types)}
+
+    while True:
+        response = client.conversations_list(
+            limit=999, cursor=cursor, exclude_archived=True, **extra_params
+        )
+        channels.extend(response.data["channels"])
+        cursor = response.data.get("response_metadata", {}).get("next_cursor")
+        if not cursor:
+            break
+
+    return channels
+
+
 def get_channels_with_search(
     search_string: str = "",
-    limit: int = 999,
     types: Optional[list[SlackChannelTypes]] = None,
     exact_match: bool = False,
-) -> list[str]:
+) -> list[dict[str, Any]]:
     """
     The slack api is paginated but does not include search, so we need to fetch
     all channels and filter them ourselves
@@ -59,20 +85,15 @@ def get_channels_with_search(
     """
 
     try:
-        client = get_slack_client()
-        channels = []
-        cursor = None
-        extra_params = {}
-        extra_params["types"] = ",".join(types) if types else None
-
-        while True:
-            response = client.conversations_list(
-                limit=limit, cursor=cursor, exclude_archived=True, **extra_params
-            )
-            channels.extend(response.data["channels"])
-            cursor = response.data.get("response_metadata", {}).get("next_cursor")
-            if not cursor:
-                break
+        channels = get_channels()
+        if not types or (
+            SlackChannelTypes.PUBLIC in types and SlackChannelTypes.PRIVATE in types
+        ):
+            pass
+        elif SlackChannelTypes.PRIVATE in types:
+            channels = [c for c in channels if c["is_private"]]
+        else:
+            channels = [c for c in channels if not c["is_private"]]
 
         # The search string can be multiple channels separated by commas
         if search_string:
